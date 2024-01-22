@@ -1,0 +1,1 @@
+This repository will contain various projects related to kernel dev for my own personal development. 

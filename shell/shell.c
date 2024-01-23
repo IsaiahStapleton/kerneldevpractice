@@ -3,13 +3,29 @@
 
 int main(int argc, char const *argv[])
 {
+
     char cwd[1024];
+    char user_input[1024];
 
-    getcwd(cwd, 1024);
+    while (1)
+    {
 
-    printf("%s$ ", cwd);
+        getcwd(cwd, 1024);
 
-    printf("\n");
+        printf("%s$ ", cwd);
+
+        if (fgets(user_input, sizeof(user_input), stdin))
+        {
+            if (user_input[0] == '\n')
+            {
+                continue;
+            }
+            
+            printf("Unrecognized command \n");
+        } 
+        
+
+    }
 
     return 0;
 }

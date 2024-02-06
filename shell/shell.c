@@ -6,10 +6,15 @@
 #include <sys/wait.h>
 
 char user_input[1024];
-char og_input[1024];
 char cwd[1024];
+int argnum;
 
-char parsed_input[1024][1024];
+typedef struct process
+{
+    char *command;
+    char **args;
+
+} process;
 
 int countArgs(char *input)
 {
@@ -28,43 +33,40 @@ int countArgs(char *input)
     return argnum;
 }
 
-void parseArgs()
+void setup_process(process *process)
 {
-    // j is current loc in string array, is loc in user input string
-    int j = 0;
     int i = 0;
-    int k = 0;
 
-    while (j != -1)
+    if (user_input[0] == '.')
     {
+        user_input[0] = ' ';
+    }
 
-        if (user_input[0] == '.')
-        {
-            user_input[0] == ' ';
-        }
-        
-        // exec /bin/ls -l
+    if (user_input[0] == '/')
+    {
+        process->command = "exec";
 
-        if (user_input[i] == ' ')
-        {
-            j++;
-            i++;
-            k = 0;
-            
-            continue;
-        }
-        else if (user_input[i] == '\0')
-        {
-            j = -1;
-            break;
-        }
-        else
-        {
-            parsed_input[j][k] = user_input[i];
-            k++;
-            i++;
-        }
+        char *p = strtok(user_input, " ");
 
+        while (p != NULL)
+        {
+            process->args[i++] = p;
+            p = strtok(NULL, " ");
+        }
+    }
+    else
+    {
+        char *p = strtok(user_input, " ");
+
+        // Set command from first argument and then move to next argument
+        process->command = p;
+        p = strtok(NULL, " ");
+
+        while (p != NULL)
+        {
+            process->args[i++] = p;
+            p = strtok(NULL, " ");
+        }
     }
 }
 
@@ -74,6 +76,11 @@ int main(int argc, char const *argv[])
     while (1)
     {
 
+        struct process parent;
+
+        parent.args = malloc(sizeof(char *) * argnum);
+        parent.command = malloc(sizeof(char) * 64);
+
         int status;
 
         getcwd(cwd, 1024);
@@ -82,35 +89,21 @@ int main(int argc, char const *argv[])
 
         fgets(user_input, sizeof(user_input), stdin);
 
-        strcpy(og_input, user_input);
+        // todo: Dynamically allocate memory for argnum
+        argnum = countArgs(user_input);
 
-        parseArgs();
+        setup_process(&parent);
 
-        // char *split_user_input = strtok(user_input, " ");
+        // Remove newline character on last element in parent.args array
+        parent.args[argnum - 2][strcspn(parent.args[argnum - 2], "\n")] = 0;
 
-        // // Remove the newline character
-        // split_user_input[strcspn(split_user_input, "\n")] = 0;
-
-        // get rid of trailing space
-        // todo: change to remove all spaces
-        if (og_input[strlen(og_input) - 2] == ' ')
-        {
-            og_input[strlen(og_input) - 2] = '\0';
-        }
-
-        int argnum = countArgs(og_input);
-
-        char *split_user_input = strtok(user_input, " ");
-
+        // If user only types enter, begin loop again
         if (user_input[0] == '\n')
         {
             continue;
         }
 
-        // Remove the newline character
-        split_user_input[strcspn(split_user_input, "\n")] = 0;
-
-        if (strcmp(split_user_input, "exit") == 0)
+        if (strcmp(parent.command, "exit") == 0)
         {
 
             if (argnum != 1)
@@ -122,19 +115,16 @@ int main(int argc, char const *argv[])
                 return 0;
             }
         }
-        else if (strcmp(split_user_input, "cd") == 0)
+        else if (strcmp(parent.command, "cd") == 0)
         {
             if (argnum != 2)
             {
-                printf("Warning: exit takes only 1 argument \n");
+                printf("Warning: cd takes only 1 argument \n");
             }
             else
             {
-                // Advance string to second argument && remove newline char
-                split_user_input = strtok(NULL, " ");
-                split_user_input[strcspn(split_user_input, "\n")] = 0;
 
-                int result = chdir(split_user_input);
+                int result = chdir(parent.args[0]);
 
                 if (result != 0)
                 {
@@ -142,20 +132,8 @@ int main(int argc, char const *argv[])
                 }
             }
         }
-        else if (strcmp(split_user_input, "exec") == 0 || og_input[0] == '.' || og_input[0] == '/')
+        else if (strcmp(parent.command, "exec") == 0 || user_input[0] == '.' || user_input[0] == '/')
         {
-
-            if (user_input[0] == '.')
-            {
-
-                // Shift the characters to the left by one position to get rid of leading . char
-                for (int i = 0; i < strlen(user_input); i++)
-                {
-                    user_input[i] = user_input[i + 1];
-                }
-            }
-
-            // printf("about to fork \n");
             pid_t pid = fork();
 
             if (pid == -1)
@@ -165,48 +143,11 @@ int main(int argc, char const *argv[])
             }
             else if (pid == 0)
             {
-                // printf("Child Process: PID = %d\n", getpid());
-
-                // get rid of trailing space
-                // todo: change to remove all spaces
-                if (og_input[strlen(og_input) - 2] == ' ')
-                {
-                    og_input[strlen(og_input) - 2] = '\0';
-                }
-
-                char *args[1024];
-
-                int i = 0;
-
-                if (strcmp(split_user_input, "exec") == 0)
-                {
-                    split_user_input = strtok(NULL, " ");
-                }
-
-                while (1)
-                {
-                    printf("%s ", split_user_input);
-
-                    if (split_user_input == NULL)
-                    {
-                        break;
-                    }
-                    else
-                    {
-                        split_user_input[strcspn(split_user_input, "\n")] = 0;
-
-                        args[i] = split_user_input;
-
-                        split_user_input = strtok(NULL, " ");
-
-                        i++;
-                    }
-                }
-
-                int result = execv(args[0], args);
+                int result = execv(parent.args[0], parent.args);
 
                 if (result == -1)
                 {
+                    // try search bin
                     perror("execv");
                     exit(EXIT_FAILURE);
                     printf("This shouldn't print");
@@ -216,6 +157,12 @@ int main(int argc, char const *argv[])
             {
                 pid_t wait_pid = waitpid(pid, &status, 0);
 
+                if (wait_pid == -1)
+                {
+                    perror("waitpid");
+                    exit(EXIT_FAILURE);
+                }
+
                 // Parent process
                 // printf("Parent Process: PID = %d, Child PID = %d\n", getpid(), pid);
                 continue;
@@ -224,7 +171,7 @@ int main(int argc, char const *argv[])
         else
         {
 
-            printf("Unrecognized command: %s \n", split_user_input);
+            printf("Unrecognized command: %s \n", parent.command);
         }
     }
 

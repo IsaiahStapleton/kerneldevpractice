@@ -42,7 +42,7 @@ void setup_process(process *process)
         user_input[0] = ' ';
     }
 
-    if (user_input[0] == '/')
+    if (user_input[1] == '/' || user_input[0] == '/')
     {
         process->command = "exec";
 
@@ -52,20 +52,39 @@ void setup_process(process *process)
         {
             process->args[i++] = p;
             p = strtok(NULL, " ");
+
+            if (p == NULL)
+            {
+                char *linep = strchr(process->args[i - 1], '\n');
+
+                if (linep != NULL)
+                {
+                    *linep = '\0';
+                }
+            }
         }
     }
     else
     {
         char *p = strtok(user_input, " ");
 
-        // Set command from first argument and then move to next argument
         process->command = p;
-        p = strtok(NULL, " ");
+
 
         while (p != NULL)
         {
             process->args[i++] = p;
             p = strtok(NULL, " ");
+
+            if (p == NULL)
+            {
+                char *linep = strchr(process->args[i - 1], '\n');
+
+                if (linep != NULL)
+                {
+                    *linep = '\0';
+                }
+            }
         }
     }
 }
@@ -95,7 +114,6 @@ int main(int argc, char const *argv[])
         setup_process(&parent);
 
         // Remove newline character on last element in parent.args array
-        parent.args[argnum - 2][strcspn(parent.args[argnum - 2], "\n")] = 0;
 
         // If user only types enter, begin loop again
         if (user_input[0] == '\n')
@@ -132,8 +150,10 @@ int main(int argc, char const *argv[])
                 }
             }
         }
-        else if (strcmp(parent.command, "exec") == 0 || user_input[0] == '.' || user_input[0] == '/')
+        else if (strcmp(parent.command, "exec") == 0 || user_input[0] == '/')
         {
+
+            // printf("about to fork \n");
             pid_t pid = fork();
 
             if (pid == -1)
@@ -147,10 +167,8 @@ int main(int argc, char const *argv[])
 
                 if (result == -1)
                 {
-                    // try search bin
                     perror("execv");
                     exit(EXIT_FAILURE);
-                    printf("This shouldn't print");
                 }
             }
             else
@@ -170,6 +188,38 @@ int main(int argc, char const *argv[])
         }
         else
         {
+
+            pid_t pid = fork();
+
+            if (pid == -1)
+            {
+                perror("fork failed");
+                exit(EXIT_FAILURE);
+            }
+            else if (pid == 0)
+            {
+                int result = execvp(parent.command, parent.args);
+
+                if (result == -1)
+                {
+                    perror("execvp");
+                    exit(EXIT_FAILURE);
+                }
+            }
+            else
+            {
+                pid_t wait_pid = waitpid(pid, &status, 0);
+
+                if (wait_pid == -1)
+                {
+                    perror("waitpid");
+                    exit(EXIT_FAILURE);
+                }
+                else
+                {
+                    continue;
+                }
+            }
 
             printf("Unrecognized command: %s \n", parent.command);
         }

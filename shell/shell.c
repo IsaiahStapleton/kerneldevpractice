@@ -8,17 +8,23 @@
 
 char user_input[1024];
 char cwd[1024];
+char buffer[128];
 
 typedef struct process
 {
     char *command;
-    char *filename;
+    char *input_file;
+    char *output_file;
     char **args;
     int redirect_in;
     int redirect_out;
     int pipes;
-
 } process;
+
+void emptyCharArray(char array[])
+{
+    memset(array, '\0', 1024 * sizeof(char));
+}
 
 char *remove_newline(char *str)
 {
@@ -42,73 +48,75 @@ void countArgs(char *input, int *num)
     {
         if (input[i] == ' ')
         {
-            *num = *num+1;
+            *num = *num + 1;
         }
     }
-
 }
 
-int redirect_in(process *process, int i)
+void redirect_in(process *process)
 {
 
-    int file = open(process->filename, O_RDONLY);
-
-    int original_stdin = dup(STDIN_FILENO);
-
-    if (file == -1)
+    int input_fd = open(process->input_file, O_RDONLY);
+    if (input_fd == -1)
     {
-        perror("Error opening file");
+        perror("open input file");
+        exit(EXIT_FAILURE);
     }
+    dup2(input_fd, STDIN_FILENO);
+    close(input_fd);
 
-    if (dup2(file, STDIN_FILENO) == -1)
+    // Read from stdin(file) and put in args
+
+    if (fgets(buffer, sizeof(buffer), stdin) != NULL)
     {
-        perror("Error redirecting stdin");
-    }
+        char *ptr = remove_newline(buffer);
 
-    close(file);
+        int i = 0;
 
-
-    char *current_word = malloc(sizeof(char) * 64);
-
-    int j = 0;
-
-    int get_char;
-    while ((get_char = getchar()) != EOF)
-    {
-
-        // if ((get_char = getchar()) == EOF)
-        // {
-        //     process->args[i] = *current_word;
-        //     i++;
-        //     break;
-        // }
-
-        if (get_char == 10)
+        while (1)
         {
-            current_word[j] = '\0';
-            process->args[i] = malloc(sizeof(char) * 64);
-            strcpy(process->args[i], current_word);
-            i++;
-            current_word[0] = '\0';
-            j = 0;
+            if (process->args[i] != NULL)
+            {
+                i++;
+            }
+            else
+            {
+                break;
+            }
         }
-        else if (get_char != 32)
+        int j = 0;
+
+        int allocated_mem = 0;
+
+        while (*ptr)
         {
-            current_word[j] = get_char;
-            j++;
+            if (*ptr == ' ')
+            {
+                ptr++;
+                i++;
+                j = 0;
+                allocated_mem = 0;
+            }
+            else
+            {
+
+                if (allocated_mem == 0)
+                {
+                    process->args[i] = malloc(sizeof(char) * 64);
+                    allocated_mem = 1;
+                }
+                else
+                {
+                    process->args[i][j] = *ptr;
+                    j++;
+                    ptr++;
+                }
+            }
         }
+
+        emptyCharArray(buffer);
     }
 
-    // Restore stdin to its original file descriptor
-    if (dup2(original_stdin, STDIN_FILENO) == -1)
-    {
-        perror("Error restoring stdin");
-    }
-    
-    close(original_stdin);
-
-
-    return i;
 }
 
 void setup_process(process *process, char *user_input)
@@ -128,7 +136,7 @@ void setup_process(process *process, char *user_input)
     }
     else
     {
-        strcpy(process->command, p);
+        strcpy(process->command, remove_newline(p));
     }
 
     while (p != NULL)
@@ -138,15 +146,15 @@ void setup_process(process *process, char *user_input)
         {
             process->redirect_in++;
             p = strtok(NULL, " ");
-            process->filename = remove_newline(p);
-            i = redirect_in(process, i);
+            process->input_file = remove_newline(p);
+            p = strtok(NULL, " ");
         }
         else if (strcmp(p, ">") == 0)
         {
             process->redirect_out++;
             p = strtok(NULL, " ");
-            process->filename = p;
-            i++;
+            process->output_file = remove_newline(p);
+            p = strtok(NULL, " ");
         }
         else if (strcmp(p, "|") == 0)
         {
@@ -155,11 +163,55 @@ void setup_process(process *process, char *user_input)
         else
         {
             process->args[i] = malloc(sizeof(char) * 64);
-            process->args[i++] = remove_newline(p);
+            process->args[i] = remove_newline(p);
+            i++;
         }
 
         p = strtok(NULL, " ");
+    }
+}
 
+void exec_cmd(process *process)
+{
+    int status;
+    pid_t pid = fork();
+
+    if (pid == -1)
+    {
+        perror("fork failed");
+        exit(EXIT_FAILURE);
+    }
+    else if (pid == 0)
+    {
+
+        if (process->redirect_in != 0)
+        {
+            redirect_in(process);
+        }
+        else if (process->redirect_out != 0)
+        {
+            printf("placeholder");
+        }
+
+        int result = execvp(process->args[0], process->args);
+
+        if (result == -1)
+        {
+            perror("execvp");
+            printf("Unrecognized command: %s \n", process->command);
+
+            exit(EXIT_FAILURE);
+        }
+    }
+    else
+    {
+        pid_t wait_pid = waitpid(pid, &status, 0);
+
+        if (wait_pid == -1)
+        {
+            perror("waitpid");
+            exit(EXIT_FAILURE);
+        }
     }
 }
 
@@ -168,31 +220,27 @@ int main(int argc, char const *argv[])
 
     while (1)
     {
-        int status;
         struct process parent;
 
         int *argnum = malloc(sizeof(int));
 
-        
         parent.command = malloc(sizeof(char) * 64);
         parent.redirect_in = 0;
         parent.redirect_out = 0;
         parent.pipes = 0;
-        parent.filename = malloc(sizeof(char) * 64);
-
-
+        parent.input_file = malloc(sizeof(char) * 64);
+        parent.output_file = malloc(sizeof(char) * 64);
 
         getcwd(cwd, 1024);
 
         printf("%s$ ", cwd);
+        fflush(stdout);
 
-        fgets(user_input, 64, stdin);
-
+        fgets(user_input, sizeof(user_input), stdin);
 
         countArgs(user_input, argnum);
 
         parent.args = malloc(sizeof(char *) * *argnum);
-
 
         // If user only types enter, begin loop again
         if (user_input[0] == '\n')
@@ -200,10 +248,7 @@ int main(int argc, char const *argv[])
             continue;
         }
 
-
         setup_process(&parent, user_input);
-
-
 
         if (strcmp(parent.command, "exit") == 0)
         {
@@ -234,75 +279,10 @@ int main(int argc, char const *argv[])
                 }
             }
         }
-        else if (strcmp(parent.command, "exec") == 0 || user_input[0] == '/')
-        {
-
-            pid_t pid = fork();
-
-            if (pid == -1)
-            {
-                perror("fork failed");
-                exit(EXIT_FAILURE);
-            }
-            else if (pid == 0)
-            {
-                int result = execv(parent.args[0], parent.args);
-
-                if (result == -1)
-                {
-                    perror("execv");
-                    exit(EXIT_FAILURE);
-                }
-            }
-            else
-            {
-                pid_t wait_pid = waitpid(pid, &status, 0);
-
-                if (wait_pid == -1)
-                {
-                    perror("waitpid");
-                    exit(EXIT_FAILURE);
-                }
-
-                continue;
-            }
-        }
         else
         {
 
-            pid_t pid = fork();
-
-            if (pid == -1)
-            {
-                perror("fork failed");
-                exit(EXIT_FAILURE);
-            }
-            else if (pid == 0)
-            {
-                int result = execvp(parent.command, parent.args);
-
-                if (result == -1)
-                {
-                    perror("execvp");
-                    exit(EXIT_FAILURE);
-                }
-            }
-            else
-            {
-                pid_t wait_pid = waitpid(pid, &status, 0);
-
-                if (wait_pid == -1)
-                {
-                    perror("waitpid");
-                    exit(EXIT_FAILURE);
-                }
-                else
-                {
-                    continue;
-                }
-            }
-
-            printf("Unrecognized command: %s \n", parent.command);
+            exec_cmd(&parent);
         }
     }
 

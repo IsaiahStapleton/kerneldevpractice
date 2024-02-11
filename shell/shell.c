@@ -116,6 +116,19 @@ void redirect_in(process *process)
 
         emptyCharArray(buffer);
     }
+}
+
+void redirect_out(process *process)
+{
+
+    int output_fd = open(process->output_file, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (output_fd == -1)
+    {
+        perror("open output file");
+        exit(EXIT_FAILURE);
+    }
+    dup2(output_fd, STDOUT_FILENO);
+    close(output_fd);
 
 }
 
@@ -190,7 +203,7 @@ void exec_cmd(process *process)
         }
         else if (process->redirect_out != 0)
         {
-            printf("placeholder");
+            redirect_out(process);
         }
 
         int result = execvp(process->args[0], process->args);

@@ -18,7 +18,6 @@ typedef struct process
     char **args;
     int redirect_in;
     int redirect_out;
-    int pipes;
 } process;
 
 void emptyCharArray(char array[])
@@ -38,6 +37,18 @@ char *remove_newline(char *str)
     return str;
 }
 
+char *remove_space(char *str)
+{
+    int length = strlen(str);
+
+    if (length > 0 && str[length - 1] == ' ')
+    {
+        str[length - 1] = '\0';
+    }
+
+    return str;
+}
+
 void countArgs(char *input, int *num)
 {
     int i;
@@ -49,6 +60,19 @@ void countArgs(char *input, int *num)
         if (input[i] == ' ')
         {
             *num = *num + 1;
+        }
+    }
+}
+
+void countPipes(char *input, int *pipes)
+{
+    int i;
+
+    for (i = 0; i < strlen(input); i++)
+    {
+        if (input[i] == '|')
+        {
+            *pipes = *pipes + 1;
         }
     }
 }
@@ -129,7 +153,6 @@ void redirect_out(process *process)
     }
     dup2(output_fd, STDOUT_FILENO);
     close(output_fd);
-
 }
 
 void setup_process(process *process, char *user_input)
@@ -169,10 +192,6 @@ void setup_process(process *process, char *user_input)
             process->output_file = remove_newline(p);
             p = strtok(NULL, " ");
         }
-        else if (strcmp(p, "|") == 0)
-        {
-            process->pipes++;
-        }
         else
         {
             process->args[i] = malloc(sizeof(char) * 64);
@@ -184,8 +203,185 @@ void setup_process(process *process, char *user_input)
     }
 }
 
+void exec_cmd_wpipes(process **process)
+{
+
+    int status;
+    int result;
+    char cmd_output[1024];
+
+    int current_process = 0;
+
+    int pipefd[2];
+
+    if (pipe(pipefd) == -1)
+    {
+        perror("pipe");
+    }
+
+    pid_t pid = fork();
+
+    if (pid == -1)
+    {
+        perror("fork failed");
+        exit(EXIT_FAILURE);
+    }
+    else if (pid == 0) // Child
+    {
+
+        // Close read
+        close(pipefd[0]);
+
+        // Redirect stdout to the write end of the pipe
+        dup2(pipefd[1], STDOUT_FILENO);
+
+        // Handle redirection
+        if (process[current_process]->redirect_in != 0)
+        {
+            redirect_in(process[current_process]);
+        }
+        else if (process[current_process]->redirect_out != 0)
+        {
+            redirect_out(process[current_process]);
+        }
+
+        // Execute command
+        result = execvp(process[current_process]->args[0], process[current_process]->args);
+
+        // Close write
+        close(pipefd[1]);
+
+        // Error checking for execvp
+        if (result == -1)
+        {
+            perror("execvp");
+            printf("Unrecognized command: %s \n", process[current_process]->command);
+
+            exit(EXIT_FAILURE);
+        }
+    }
+    else // Parent
+    {
+        // Close write
+        close(pipefd[1]);
+
+        // Read in output of execvp from last command
+        read(pipefd[0], cmd_output, sizeof(cmd_output));
+
+        // Close read
+        close(pipefd[0]);
+
+        handle_cmd_output(process, cmd_output, current_process);
+
+        result = execvp(process[current_process + 1]->args[0], process[current_process + 1]->args);
+
+        if (result == -1)
+        {
+            perror("execvp");
+            printf("Unrecognized command: %s \n", process[current_process + 1]->command);
+
+            exit(EXIT_FAILURE);
+        }
+
+        pid_t wait_pid = waitpid(pid, &status, 0);
+
+        if (wait_pid == -1)
+        {
+            perror("waitpid");
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
+void setup_process_wpipes(process **process, char *user_input, int *pipes)
+{
+    int num_of_processes = *pipes + 1;
+    // Keep track of which process is executing
+    // int current_process = 0;
+    int *argnum = malloc(sizeof(int));
+
+    char *input = strtok(user_input, "|");
+
+    // Setup each individual process
+    for (size_t i = 0; i < num_of_processes; i++)
+    {
+        process[i] = malloc(sizeof(struct process));
+        process[i]->command = malloc(sizeof(char) * 64);
+        process[i]->redirect_in = 0;
+        process[i]->redirect_out = 0;
+        process[i]->input_file = malloc(sizeof(char) * 64);
+        process[i]->output_file = malloc(sizeof(char) * 64);
+
+        input = remove_space(input);
+
+        countArgs(input, argnum);
+
+        process[i]->args = malloc(sizeof(char *) * *argnum);
+
+        setup_process(process[i], input);
+
+        if (strcmp(process[i]->command, "exit") == 0)
+        {
+
+            if (*argnum != 1)
+            {
+                printf("Warning: exit takes no args \n");
+            }
+            // else
+            // {
+            //     return 0;
+            // }
+        }
+        else if (strcmp(process[i]->command, "cd") == 0)
+        {
+            if (*argnum != 2)
+            {
+                printf("Warning: cd takes only 1 argument \n");
+            }
+            else
+            {
+
+                int result = chdir(process[i]->args[0]);
+
+                if (result != 0)
+                {
+                    perror("chdir");
+                }
+            }
+        }
+        else
+        {
+            exec_cmd_wpipes(process);
+        }
+    }
+}
+
+void handle_cmd_output(process **process, char cmd_output[], int current_process)
+{
+
+    int *argnum = malloc(sizeof(int));
+
+    char *input = strtok(user_input, "|");
+
+    process[current_process + 1] = malloc(sizeof(struct process));
+    process[current_process + 1]->command = malloc(sizeof(char) * 64);
+    process[current_process + 1]->redirect_in = 0;
+    process[current_process + 1]->redirect_out = 0;
+    process[current_process + 1]->input_file = malloc(sizeof(char) * 64);
+    process[current_process + 1]->output_file = malloc(sizeof(char) * 64);
+
+    input = remove_space(input);
+
+    countArgs(input, argnum);
+
+    process[current_process + 1]->args = malloc(sizeof(char *) * *argnum);
+
+    setup_process(process[current_process + 1], input);
+}
+
 void exec_cmd(process *process)
 {
+
     int status;
     pid_t pid = fork();
 
@@ -233,16 +429,8 @@ int main(int argc, char const *argv[])
 
     while (1)
     {
-        struct process parent;
-
         int *argnum = malloc(sizeof(int));
-
-        parent.command = malloc(sizeof(char) * 64);
-        parent.redirect_in = 0;
-        parent.redirect_out = 0;
-        parent.pipes = 0;
-        parent.input_file = malloc(sizeof(char) * 64);
-        parent.output_file = malloc(sizeof(char) * 64);
+        int *pipes = malloc(sizeof(int));
 
         getcwd(cwd, 1024);
 
@@ -251,9 +439,9 @@ int main(int argc, char const *argv[])
 
         fgets(user_input, sizeof(user_input), stdin);
 
-        countArgs(user_input, argnum);
+        countPipes(user_input, pipes);
 
-        parent.args = malloc(sizeof(char *) * *argnum);
+        process **process_array = (process **)malloc((*pipes + 1) * sizeof(process *));
 
         // If user only types enter, begin loop again
         if (user_input[0] == '\n')
@@ -261,41 +449,56 @@ int main(int argc, char const *argv[])
             continue;
         }
 
-        setup_process(&parent, user_input);
-
-        if (strcmp(parent.command, "exit") == 0)
+        if (*pipes != 0)
         {
-
-            if (*argnum != 1)
-            {
-                printf("Warning: exit takes no args \n");
-            }
-            else
-            {
-                return 0;
-            }
-        }
-        else if (strcmp(parent.command, "cd") == 0)
-        {
-            if (*argnum != 2)
-            {
-                printf("Warning: cd takes only 1 argument \n");
-            }
-            else
-            {
-
-                int result = chdir(parent.args[0]);
-
-                if (result != 0)
-                {
-                    perror("chdir");
-                }
-            }
+            setup_process_wpipes(process_array, user_input, pipes);
         }
         else
         {
+            countArgs(user_input, argnum);
+            process_array[0] = malloc(sizeof(struct process));
+            process_array[0]->args = malloc(sizeof(char *) * *argnum);
+            process_array[0]->command = malloc(sizeof(char) * 64);
+            process_array[0]->redirect_in = 0;
+            process_array[0]->redirect_out = 0;
+            process_array[0]->input_file = malloc(sizeof(char) * 64);
+            process_array[0]->output_file = malloc(sizeof(char) * 64);
 
-            exec_cmd(&parent);
+            setup_process(process_array[0], user_input);
+
+            if (strcmp(process_array[0]->command, "exit") == 0)
+            {
+
+                if (*argnum != 1)
+                {
+                    printf("Warning: exit takes no args \n");
+                }
+                else
+                {
+                    return 0;
+                }
+            }
+            else if (strcmp(process_array[0]->command, "cd") == 0)
+            {
+                if (*argnum != 2)
+                {
+                    printf("Warning: cd takes only 1 argument \n");
+                }
+                else
+                {
+
+                    int result = chdir(process_array[0]->args[0]);
+
+                    if (result != 0)
+                    {
+                        perror("chdir");
+                    }
+                }
+            }
+            else
+            {
+                exec_cmd(process_array[0]);
+            }
         }
     }
 

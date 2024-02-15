@@ -5,10 +5,13 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <stdbool.h>
 
 char user_input[1024];
 char cwd[1024];
 char buffer[128];
+
+int current_pipe = 0;
 
 typedef struct process
 {
@@ -155,18 +158,20 @@ void redirect_out(process *process)
     close(output_fd);
 }
 
-void setup_process(process *process, char *user_input)
+void setup_process(process *process, char *input)
 {
     int i = 0;
 
-    char *p = strtok(user_input, " ");
+    char *input_tkn = strdup(input);
 
-    if (user_input[0] == '.')
+    char *p = strtok(input_tkn, " ");
+
+    if (input_tkn[0] == '.')
     {
-        user_input[0] = ' ';
+        input_tkn[0] = ' ';
     }
 
-    if (user_input[1] == '/' || user_input[0] == '/')
+    if (input_tkn[1] == '/' || input_tkn[0] == '/')
     {
         process->command = "exec";
     }
@@ -203,14 +208,71 @@ void setup_process(process *process, char *user_input)
     }
 }
 
-void exec_cmd_wpipes(process **process)
+// Called in setup_process_wpipes in order to process the output of the last running command
+// and put the output into the args of the following command
+void handle_cmd_output(process **process, char cmd_output[], int *current_process)
 {
 
-    int status;
-    int result;
-    char cmd_output[1024];
+    int *argnum = malloc(sizeof(int));
 
-    int current_process = 0;
+    char *input = cmd_output;
+
+    // input = remove_space(input);
+
+    countArgs(input, argnum);
+
+    // process[*current_process]->args = malloc(sizeof(char *) * *argnum);
+
+    int i = 0;
+
+    // Set i to the last empty arg in process arg array
+    while (1)
+    {
+        if (process[*current_process]->args[i] != NULL)
+        {
+            i++;
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    char *p = strtok(input, "\n");
+
+    while (p != NULL)
+    {
+
+        if (strcmp(p, "<") == 0)
+        {
+            process[*current_process]->redirect_in++;
+            p = strtok(NULL, " ");
+            process[*current_process]->input_file = remove_newline(p);
+            p = strtok(NULL, " ");
+        }
+        else if (strcmp(p, ">") == 0)
+        {
+            process[*current_process]->redirect_out++;
+            p = strtok(NULL, " ");
+            process[*current_process]->output_file = remove_newline(p);
+            p = strtok(NULL, " ");
+        }
+        else
+        {
+            process[*current_process]->args[i] = malloc(sizeof(char) * 64);
+            process[*current_process]->args[i] = remove_newline(p);
+            i++;
+        }
+
+        p = strtok(NULL, " ");
+    }
+}
+
+void exec_cmd_wpipes(process **process, int *pipes, int *current_process)
+{
+    int result;
+
+    int num_of_processes = *pipes + 1;
 
     int pipefd[2];
 
@@ -219,88 +281,99 @@ void exec_cmd_wpipes(process **process)
         perror("pipe");
     }
 
-    pid_t pid = fork();
-
-    if (pid == -1)
+    for (size_t i = 0; i < num_of_processes; i++)
     {
-        perror("fork failed");
-        exit(EXIT_FAILURE);
+
+        pid_t pid = fork();
+
+        if (pid == -1)
+        {
+            perror("fork failed");
+            exit(EXIT_FAILURE);
+        }
+        else if (pid == 0) // Child
+        {
+
+            // Close read if first command, else redirect stdin to read end of pipe
+            if (*current_process == 0)
+            {
+                close(pipefd[0]);
+            }
+            else
+            {
+                dup2(pipefd[0], STDIN_FILENO);
+                close(pipefd[0]);
+            }
+
+            // Redirect stdout to the write end of the pipe, unless it is last command
+            if (*current_process != *pipes)
+            {
+                dup2(pipefd[1], STDOUT_FILENO);
+                close(pipefd[1]);
+            }
+            else
+            {
+                close(pipefd[1]);
+            }
+
+            // Handle redirection
+            if (process[*current_process]->redirect_in != 0)
+            {
+                redirect_in(process[*current_process]);
+            }
+            else if (process[*current_process]->redirect_out != 0)
+            {
+                redirect_out(process[*current_process]);
+            }
+
+            // Execute command
+            result = execvp(process[*current_process]->args[0], process[*current_process]->args);
+
+
+            // Error checking for execvp
+            if (result == -1)
+            {
+                perror("execvp");
+                printf("Unrecognized command: %s \n", process[*current_process]->command);
+
+                exit(EXIT_FAILURE);
+            }
+        }
+        else
+        {
+            if (*current_process == *pipes)
+            {
+                close(pipefd[0]);
+                close(pipefd[1]);
+            }
+
+            *current_process = *current_process + 1;
+        }
     }
-    else if (pid == 0) // Child
+
+    // Wait for all child processes to finish
+    for (int i = 0; i < num_of_processes; i++)
     {
-
-        // Close read
-        close(pipefd[0]);
-
-        // Redirect stdout to the write end of the pipe
-        dup2(pipefd[1], STDOUT_FILENO);
-
-        // Handle redirection
-        if (process[current_process]->redirect_in != 0)
-        {
-            redirect_in(process[current_process]);
-        }
-        else if (process[current_process]->redirect_out != 0)
-        {
-            redirect_out(process[current_process]);
-        }
-
-        // Execute command
-        result = execvp(process[current_process]->args[0], process[current_process]->args);
-
-        // Close write
-        close(pipefd[1]);
-
-        // Error checking for execvp
-        if (result == -1)
-        {
-            perror("execvp");
-            printf("Unrecognized command: %s \n", process[current_process]->command);
-
-            exit(EXIT_FAILURE);
-        }
-    }
-    else // Parent
-    {
-        // Close write
-        close(pipefd[1]);
-
-        // Read in output of execvp from last command
-        read(pipefd[0], cmd_output, sizeof(cmd_output));
-
-        // Close read
-        close(pipefd[0]);
-
-        handle_cmd_output(process, cmd_output, current_process);
-
-        result = execvp(process[current_process + 1]->args[0], process[current_process + 1]->args);
-
-        if (result == -1)
-        {
-            perror("execvp");
-            printf("Unrecognized command: %s \n", process[current_process + 1]->command);
-
-            exit(EXIT_FAILURE);
-        }
-
-        pid_t wait_pid = waitpid(pid, &status, 0);
-
-        if (wait_pid == -1)
-        {
-            perror("waitpid");
-            exit(EXIT_FAILURE);
-        }
+        wait(NULL);
     }
 }
 
 void setup_process_wpipes(process **process, char *user_input, int *pipes)
 {
-    int num_of_processes = *pipes + 1;
-    // Keep track of which process is executing
-    // int current_process = 0;
-    int *argnum = malloc(sizeof(int));
 
-    char *input = strtok(user_input, "|");
+    int num_of_processes = *pipes + 1;
+
+    // Keep track of which process is executing
+    int *current_process = malloc(sizeof(int));
+    *current_process = 0;
+
+    // int *argnum = malloc(sizeof(int));
+
+    char *saveptr;
+
+    char *user_input_cpy = strdup(user_input);
+
+    char *input = strtok_r(user_input_cpy, "|", &saveptr);
 
     // Setup each individual process
     for (size_t i = 0; i < num_of_processes; i++)
@@ -312,71 +385,52 @@ void setup_process_wpipes(process **process, char *user_input, int *pipes)
         process[i]->input_file = malloc(sizeof(char) * 64);
         process[i]->output_file = malloc(sizeof(char) * 64);
 
-        input = remove_space(input);
-
-        countArgs(input, argnum);
-
-        process[i]->args = malloc(sizeof(char *) * *argnum);
+        process[i]->args = malloc(sizeof(char *) * 128);
 
         setup_process(process[i], input);
 
-        if (strcmp(process[i]->command, "exit") == 0)
-        {
-
-            if (*argnum != 1)
-            {
-                printf("Warning: exit takes no args \n");
-            }
-            // else
-            // {
-            //     return 0;
-            // }
-        }
-        else if (strcmp(process[i]->command, "cd") == 0)
-        {
-            if (*argnum != 2)
-            {
-                printf("Warning: cd takes only 1 argument \n");
-            }
-            else
-            {
-
-                int result = chdir(process[i]->args[0]);
-
-                if (result != 0)
-                {
-                    perror("chdir");
-                }
-            }
-        }
-        else
-        {
-            exec_cmd_wpipes(process);
-        }
+        input = strtok_r(NULL, "|", &saveptr);
     }
-}
 
-void handle_cmd_output(process **process, char cmd_output[], int current_process)
-{
+    exec_cmd_wpipes(process, pipes, current_process);
 
-    int *argnum = malloc(sizeof(int));
+    // for (size_t i = 0; i < num_of_processes; i = i + 2)
+    // {
 
-    char *input = strtok(user_input, "|");
+    //     if (strcmp(process[i]->command, "exit") == 0)
+    //     {
 
-    process[current_process + 1] = malloc(sizeof(struct process));
-    process[current_process + 1]->command = malloc(sizeof(char) * 64);
-    process[current_process + 1]->redirect_in = 0;
-    process[current_process + 1]->redirect_out = 0;
-    process[current_process + 1]->input_file = malloc(sizeof(char) * 64);
-    process[current_process + 1]->output_file = malloc(sizeof(char) * 64);
+    //         if (*argnum != 1)
+    //         {
+    //             printf("Warning: exit takes no args \n");
+    //         }
+    //         else
+    //         {
+    //             printf("Why would you pipe a command with exit");
+    //         }
+    //     }
+    //     else if (strcmp(process[i]->command, "cd") == 0)
+    //     {
+    //         if (*argnum != 2)
+    //         {
+    //             printf("Warning: cd takes only 1 argument \n");
+    //         }
+    //         else
+    //         {
 
-    input = remove_space(input);
+    //             int result = chdir(process[i]->args[0]);
 
-    countArgs(input, argnum);
-
-    process[current_process + 1]->args = malloc(sizeof(char *) * *argnum);
-
-    setup_process(process[current_process + 1], input);
+    //             if (result != 0)
+    //             {
+    //                 perror("chdir");
+    //             }
+    //         }
+    //     }
+    //     else
+    //     {
+    //         exec_cmd_wpipes(process, &pipefd, pipes, current_process);
+    //     }
+    // }
 }
 
 void exec_cmd(process *process)
